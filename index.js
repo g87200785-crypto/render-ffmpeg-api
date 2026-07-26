@@ -9,22 +9,32 @@ const { v4: uuidv4 } = require('uuid');
 
 app.use(express.json());
 
-// ========== FUNCIÓN PARA DESCARGAR ARCHIVOS ==========
+// ========== FUNCIÓN PARA DESCARGAR ARCHIVOS CON USER-AGENT ==========
 async function downloadFile(url, outputPath) {
-  const response = await axios({
-    method: 'GET',
-    url: url,
-    responseType: 'stream',
-    timeout: 60000
-  });
-  
-  const writer = fs.createWriteStream(outputPath);
-  response.data.pipe(writer);
-  
-  return new Promise((resolve, reject) => {
-    writer.on('finish', resolve);
-    writer.on('error', reject);
-  });
+  try {
+    const response = await axios({
+      method: 'GET',
+      url: url,
+      responseType: 'stream',
+      timeout: 60000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'video/mp4,video/*;q=0.8,*/*;q=0.5',
+        'Referer': 'https://www.pexels.com/'
+      }
+    });
+    
+    const writer = fs.createWriteStream(outputPath);
+    response.data.pipe(writer);
+    
+    return new Promise((resolve, reject) => {
+      writer.on('finish', resolve);
+      writer.on('error', reject);
+    });
+  } catch (error) {
+    console.error('❌ Error descargando:', error.message);
+    throw error;
+  }
 }
 
 // ========== ENDPOINT HEALTH ==========
@@ -56,11 +66,11 @@ app.post('/render', async (req, res) => {
   try {
     console.log(`[${id}] Descargando video...`);
     await downloadFile(video_url, videoPath);
-    console.log(`[${id}] Video descargado: ${videoPath}`);
+    console.log(`[${id}] ✅ Video descargado`);
     
     console.log(`[${id}] Descargando audio...`);
     await downloadFile(audio_url, audioPath);
-    console.log(`[${id}] Audio descargado: ${audioPath}`);
+    console.log(`[${id}] ✅ Audio descargado`);
     
     console.log(`[${id}] Renderizando con FFmpeg...`);
     
@@ -69,7 +79,8 @@ app.post('/render', async (req, res) => {
         .input(videoPath)
         .input(audioPath)
         .outputOptions([
-          '-c:v copy',
+          '-c:v libx264',
+          '-preset fast',
           '-c:a aac',
           '-map 0:v:0',
           '-map 1:a:0',
@@ -78,41 +89,37 @@ app.post('/render', async (req, res) => {
         ])
         .save(outputPath)
         .on('start', (cmd) => {
-          console.log(`[${id}] FFmpeg iniciado: ${cmd}`);
+          console.log(`[${id}] FFmpeg iniciado`);
         })
         .on('progress', (progress) => {
-          console.log(`[${id}] Progreso: ${progress.percent}%`);
+          console.log(`[${id}] Progreso: ${Math.round(progress.percent || 0)}%`);
         })
         .on('end', () => {
-          console.log(`[${id}] FFmpeg terminado`);
+          console.log(`[${id}] ✅ FFmpeg terminado`);
           resolve();
         })
         .on('error', (err) => {
-          console.error(`[${id}] FFmpeg error:`, err.message);
+          console.error(`[${id}] ❌ FFmpeg error:`, err.message);
           reject(err);
         });
     });
     
-    console.log(`[${id}] Video renderizado correctamente en: ${outputPath}`);
+    console.log(`[${id}] ✅ Video renderizado en: ${outputPath}`);
     
-    // 🔥 Leer el video y convertirlo a base64
+    // 🔥 LEER EL VIDEO Y DEVOLVERLO COMO BASE64
     const videoBuffer = fs.readFileSync(outputPath);
     const base64Video = videoBuffer.toString('base64');
     const videoSize = (videoBuffer.length / 1024 / 1024).toFixed(2);
     
-    console.log(`[${id}] Tamaño del video: ${videoSize} MB`);
+    console.log(`[${id}] 📊 Tamaño del video: ${videoSize} MB`);
     
     // Limpiar archivos temporales
     try {
       fs.unlinkSync(videoPath);
       fs.unlinkSync(audioPath);
       fs.unlinkSync(outputPath);
-      console.log(`[${id}] Archivos temporales eliminados`);
-    } catch(e) {
-      console.log(`[${id}] Error limpiando archivos: ${e.message}`);
-    }
+    } catch(e) {}
     
-    // ✅ DEVOLVER EL VIDEO REAL (en base64)
     res.json({
       status: 'success',
       message: 'Video renderizado',
@@ -120,7 +127,7 @@ app.post('/render', async (req, res) => {
     });
     
   } catch (error) {
-    console.error(`[${id}] Error:`, error.message);
+    console.error(`[${id}] ❌ Error:`, error.message);
     res.status(500).json({
       status: 'error',
       message: error.message
@@ -130,6 +137,4 @@ app.post('/render', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`🚀 Servidor en puerto ${PORT}`);
-  console.log(`📡 Health: http://localhost:${PORT}/health`);
-  console.log(`🎬 Render: http://localhost:${PORT}/render`);
 });
