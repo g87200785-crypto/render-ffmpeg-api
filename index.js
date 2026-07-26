@@ -2,47 +2,42 @@ const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 10000;
 const ffmpeg = require('fluent-ffmpeg');
+const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
-const https = require('https');
-const http = require('http');
 
 app.use(express.json());
 
-// ========== FUNCIÓN PARA DESCARGAR CON FETCH ==========
-function downloadFile(url, outputPath) {
-  return new Promise((resolve, reject) => {
-    const client = url.startsWith('https') ? https : http;
-    const options = {
+// ========== FUNCIÓN PARA DESCARGAR CON AXIOS ==========
+async function downloadFile(url, outputPath) {
+  try {
+    const response = await axios({
+      method: 'GET',
+      url: url,
+      responseType: 'stream',
+      timeout: 60000,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': '*/*'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+      },
+      maxRedirects: 5,
+      validateStatus: function (status) {
+        return status >= 200 && status < 400;
       }
-    };
+    });
     
-    client.get(url, options, (response) => {
-      if (response.statusCode === 301 || response.statusCode === 302) {
-        // Seguir redirección
-        client.get(response.headers.location, options, (res) => {
-          const file = fs.createWriteStream(outputPath);
-          res.pipe(file);
-          file.on('finish', () => {
-            file.close();
-            resolve();
-          });
-        }).on('error', reject);
-        return;
-      }
-      
-      const file = fs.createWriteStream(outputPath);
-      response.pipe(file);
-      file.on('finish', () => {
-        file.close();
-        resolve();
-      });
-    }).on('error', reject);
-  });
+    const writer = fs.createWriteStream(outputPath);
+    response.data.pipe(writer);
+    
+    return new Promise((resolve, reject) => {
+      writer.on('finish', resolve);
+      writer.on('error', reject);
+      response.data.on('error', reject);
+    });
+  } catch (error) {
+    console.error('❌ Error descargando:', error.message);
+    throw error;
+  }
 }
 
 // ========== HEALTH ==========
@@ -55,6 +50,20 @@ app.get('/test-download', async (req, res) => {
   try {
     const testUrl = 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3';
     const outputPath = '/tmp/test.mp3';
+    await downloadFile(testUrl, outputPath);
+    const stats = fs.statSync(outputPath);
+    fs.unlinkSync(outputPath);
+    res.json({ status: 'ok', size: stats.size });
+  } catch (error) {
+    res.json({ status: 'error', message: error.message });
+  }
+});
+
+// ========== TEST DOWNLOAD VIDEO ==========
+app.get('/test-video-download', async (req, res) => {
+  try {
+    const testUrl = 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';
+    const outputPath = '/tmp/test_video.mp4';
     await downloadFile(testUrl, outputPath);
     const stats = fs.statSync(outputPath);
     fs.unlinkSync(outputPath);
@@ -85,11 +94,11 @@ app.post('/render', async (req, res) => {
   try {
     console.log(`[${id}] Descargando video...`);
     await downloadFile(video_url, videoPath);
-    console.log(`[${id}] ✅ Video descargado`);
+    console.log(`[${id}] ✅ Video descargado (${fs.statSync(videoPath).size} bytes)`);
     
     console.log(`[${id}] Descargando audio...`);
     await downloadFile(audio_url, audioPath);
-    console.log(`[${id}] ✅ Audio descargado`);
+    console.log(`[${id}] ✅ Audio descargado (${fs.statSync(audioPath).size} bytes)`);
     
     console.log(`[${id}] Renderizando con FFmpeg...`);
     
@@ -106,8 +115,12 @@ app.post('/render', async (req, res) => {
           '-shortest'
         ])
         .save(outputPath)
-        .on('start', () => console.log(`[${id}] FFmpeg iniciado`))
-        .on('progress', (p) => console.log(`[${id}] Progreso: ${Math.round(p.percent || 0)}%`))
+        .on('start', (cmd) => {
+          console.log(`[${id}] FFmpeg iniciado`);
+        })
+        .on('progress', (progress) => {
+          console.log(`[${id}] Progreso: ${Math.round(progress.percent || 0)}%`);
+        })
         .on('end', () => {
           console.log(`[${id}] ✅ FFmpeg terminado`);
           resolve();
@@ -118,7 +131,7 @@ app.post('/render', async (req, res) => {
         });
     });
     
-    console.log(`[${id}] ✅ Video renderizado`);
+    console.log(`[${id}] ✅ Video renderizado (${fs.statSync(outputPath).size} bytes)`);
     
     const videoBuffer = fs.readFileSync(outputPath);
     const base64Video = videoBuffer.toString('base64');
@@ -129,7 +142,9 @@ app.post('/render', async (req, res) => {
       fs.unlinkSync(audioPath);
       fs.unlinkSync(outputPath);
       console.log(`[${id}] 🧹 Archivos limpiados`);
-    } catch(e) {}
+    } catch(e) {
+      console.log(`[${id}] ⚠️ Error limpiando archivos:`, e.message);
+    }
     
     res.json({
       status: 'success',
@@ -145,4 +160,7 @@ app.post('/render', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`🚀 Servidor en puerto ${PORT}`);
+  console.log(`📡 Health: /health`);
+  console.log(`📡 Test audio: /test-download`);
+  console.log(`📡 Test video: /test-video-download`);
 });
